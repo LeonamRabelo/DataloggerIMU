@@ -46,9 +46,52 @@ static absolute_time_t next_log_time;
 volatile bool capturando = false;
 static int addr = 0x68;
 
+ssd1306_t ssd;  //Estrutura para armazenar os dados do display
+
 static char filename[20] = "mpu6050.csv";
 
+////////////////Periféricos/////////////////////
+void set_rgb_color(bool r, bool g, bool b) {
+    gpio_put(LED_RGB_R, r);
+    gpio_put(LED_RGB_G, g);
+    gpio_put(LED_RGB_B, b);
+}
+void led_amarelo()   { set_rgb_color(1, 1, 0); sleep_ms(500);} // R+G
+void led_verde()     { set_rgb_color(0, 1, 0); }
+void led_vermelho()  { set_rgb_color(1, 0, 0); }
+void led_azul()      { set_rgb_color(0, 0, 1); }
+void led_roxo()      { set_rgb_color(1, 0, 1); } // R+B
+void led_branco()    { set_rgb_color(1, 1, 1); }    // Para desmontar o SD
+void led_apagado()   { set_rgb_color(0, 0, 0); }
+
+void led_piscar_azul(){
+    for (int i = 0; i < 6; i++){
+        led_azul(); sleep_ms(100);
+        led_apagado(0, 0, 0); sleep_ms(100);
+    }
+}
+
+void led_piscar_roxo(){
+    for (int i = 0; i < 6; i++){
+        led_roxo(); sleep_ms(100);
+        led_apagado(0, 0, 0); sleep_ms(100);
+    }
+}
+
+void oled_msg(const char* linha1, const char* linha2){
+    ssd1306_fill(&ssd, false);
+    //Bordas
+    ssd1306_rect(&ssd, 0, 0, 128, 64, true, false);
+    ssd1306_rect(&ssd, 1, 1, 128 - 2, 64 - 2, true, false);
+    ssd1306_rect(&ssd, 2, 2, 128 - 4, 64 - 4, true, false);
+    ssd1306_rect(&ssd, 3, 3, 128 - 6, 64 - 6, true, false);
+    ssd1306_draw_string(&ssd, linha1, 15, 15);
+    if(linha2)
+        ssd1306_draw_string(&ssd, linha2, 20, 25);
+    ssd1306_send_data(&ssd);
+}
 //////////////////////////////////////////////////////////////////////////////
+
 // Função para ler dados crus do acelerômetro, giroscópio e temperatura
 static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp){
     uint8_t buffer[6];
@@ -99,8 +142,7 @@ static FATFS *sd_get_fs_by_name(const char *name)
     return NULL;
 }
 
-static void run_setrtc()
-{
+static void run_setrtc(){
     const char *dateStr = strtok(NULL, " ");
     if (!dateStr)
     {
@@ -160,8 +202,9 @@ static void run_setrtc()
     rtc_set_datetime(&t);
 }
 
-static void run_format()
-{
+static void run_format(){
+    oled_msg("Formatando...", NULL);
+    led_piscar_azul();
     const char *arg1 = strtok(NULL, " ");
     if (!arg1)
         arg1 = sd_get_by_num(0)->pcName;
@@ -169,15 +212,20 @@ static void run_format()
     if (!p_fs)
     {
         printf("Unknown logical drive number: \"%s\"\n", arg1);
+        led_piscar_roxo();
         return;
     }
+    led_piscar_azul();
     /* Format the drive with default parameters */
     FRESULT fr = f_mkfs(arg1, 0, 0, FF_MAX_SS * 2);
-    if (FR_OK != fr)
+    if (FR_OK != fr){
         printf("f_mkfs error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
+    }
+    led_verde();
 }
-static void run_mount()
-{
+static void run_mount(){
+    led_amarelo();
     const char *arg1 = strtok(NULL, " ");
     if (!arg1)
         arg1 = sd_get_by_num(0)->pcName;
@@ -185,21 +233,23 @@ static void run_mount()
     if (!p_fs)
     {
         printf("Unknown logical drive number: \"%s\"\n", arg1);
+        led_piscar_roxo();
         return;
     }
     FRESULT fr = f_mount(p_fs, arg1, 1);
-    if (FR_OK != fr)
-    {
+    if (FR_OK != fr){
         printf("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
         return;
     }
     sd_card_t *pSD = sd_get_by_name(arg1);
     myASSERT(pSD);
     pSD->mounted = true;
+    oled_msg("SD Montado!", NULL);
+    led_verde();
     printf("Processo de montagem do SD ( %s ) concluído\n", pSD->pcName);
 }
-static void run_unmount()
-{
+static void run_unmount(){
     const char *arg1 = strtok(NULL, " ");
     if (!arg1)
         arg1 = sd_get_by_num(0)->pcName;
@@ -207,22 +257,25 @@ static void run_unmount()
     if (!p_fs)
     {
         printf("Unknown logical drive number: \"%s\"\n", arg1);
+        led_piscar_roxo();
         return;
     }
     FRESULT fr = f_unmount(arg1);
-    if (FR_OK != fr)
-    {
+    if (FR_OK != fr){
         printf("f_unmount error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
         return;
     }
     sd_card_t *pSD = sd_get_by_name(arg1);
     myASSERT(pSD);
     pSD->mounted = false;
     pSD->m_Status |= STA_NOINIT; // in case medium is removed
+    led_branco();
+    oled_msg("SD Desmontado", NULL);
     printf("SD ( %s ) desmontado\n", pSD->pcName);
 }
-static void run_getfree()
-{
+static void run_getfree(){
+    led_piscar_azul();
     const char *arg1 = strtok(NULL, " ");
     if (!arg1)
         arg1 = sd_get_by_num(0)->pcName;
@@ -231,20 +284,24 @@ static void run_getfree()
     if (!p_fs)
     {
         printf("Unknown logical drive number: \"%s\"\n", arg1);
+        led_piscar_roxo();
         return;
     }
     FRESULT fr = f_getfree(arg1, &fre_clust, &p_fs);
     if (FR_OK != fr)
     {
         printf("f_getfree error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
         return;
     }
     tot_sect = (p_fs->n_fatent - 2) * p_fs->csize;
     fre_sect = fre_clust * p_fs->csize;
     printf("%10lu KiB total drive space.\n%10lu KiB available.\n", tot_sect / 2, fre_sect / 2);
+    oled_msg("Leitura feita", NULL);
+    led_verde();
 }
-static void run_ls()
-{
+
+static void run_ls(){
     const char *arg1 = strtok(NULL, " ");
     if (!arg1)
         arg1 = "";
@@ -261,6 +318,7 @@ static void run_ls()
         if (FR_OK != fr)
         {
             printf("f_getcwd error: %s (%d)\n", FRESULT_str(fr), fr);
+            led_piscar_roxo();
             return;
         }
         p_dir = cwdbuf;
@@ -271,13 +329,13 @@ static void run_ls()
     memset(&dj, 0, sizeof dj);
     memset(&fno, 0, sizeof fno);
     fr = f_findfirst(&dj, &fno, p_dir, "*");
-    if (FR_OK != fr)
-    {
+    if (FR_OK != fr){
         printf("f_findfirst error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
         return;
     }
-    while (fr == FR_OK && fno.fname[0])
-    {
+    while(fr == FR_OK && fno.fname[0]){
+        led_piscar_azul();
         const char *pcWritableFile = "writable file",
                    *pcReadOnlyFile = "read only file",
                    *pcDirectory = "directory";
@@ -293,9 +351,10 @@ static void run_ls()
         fr = f_findnext(&dj, &fno);
     }
     f_closedir(&dj);
+    oled_msg("Leitura feita", NULL);
+    led_verde();
 }
-static void run_cat()
-{
+static void run_cat(){
     char *arg1 = strtok(NULL, " ");
     if (!arg1)
     {
@@ -304,37 +363,43 @@ static void run_cat()
     }
     FIL fil;
     FRESULT fr = f_open(&fil, arg1, FA_READ);
-    if (FR_OK != fr)
-    {
+    if (FR_OK != fr){
         printf("f_open error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
         return;
     }
     char buf[256];
-    while (f_gets(buf, sizeof buf, &fil))
-    {
+    while (f_gets(buf, sizeof buf, &fil)){
+        led_piscar_azul();
         printf("%s", buf);
     }
     fr = f_close(&fil);
-    if (FR_OK != fr)
+    if (FR_OK != fr){
         printf("f_open error: %s (%d)\n", FRESULT_str(fr), fr);
+        led_piscar_roxo();
+    }
+    oled_msg("Leitura feita", NULL);
+    led_verde();
 }
 
-void capture_mpu_data_and_save() {
+void capture_mpu_data_and_save(){
     printf("\nCapturando dados do mpu. Aguarde finalização...\n");
     FIL file;
     FRESULT res = f_open(&file, filename, FA_WRITE | FA_CREATE_ALWAYS);
 
     if(res != FR_OK){
         printf("\n[ERRO] Não foi possível abrir o arquivo para escrita. Monte o Cartao.\n");
+        led_piscar_roxo();
         return;
     }
 
     UINT bw;
     const char *header = "amostra,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z\n";
     f_write(&file, header, strlen(header), &bw);
-
+    led_vermelho();
+    oled_msg("Gravando...", NULL);
     int16_t acc[3], gyro[3], temp;
-    for (int i = 0; i < 128; i++) {
+    for(int i = 0; i < 128; i++){
         mpu6050_read_raw(acc, gyro, &temp);
 
         float ax = acc[0]/16384.0f, ay = acc[1]/16384.0f, az = acc[2]/16384.0f;
@@ -345,23 +410,25 @@ void capture_mpu_data_and_save() {
         res = f_write(&file, buffer, strlen(buffer), &bw);
         if (res != FR_OK) {
             printf("[ERRO] Não foi possível escrever no arquivo.\n");
+            led_piscar_roxo();
             break;
         }
         sleep_ms(100);
     }
     f_close(&file);
     printf("\n[DADOS SALVOS NO CARTÃO: %s]\n", filename);
+    oled_msg("Concluida!", NULL);
+    led_verde();
 }
 
 // Função para ler o conteúdo de um arquivo e exibir no terminal
-void read_file(const char *filename)
-{
+void read_file(const char *filename){
     FIL file;
     FRESULT res = f_open(&file, filename, FA_READ);
     if (res != FR_OK)
     {
         printf("[ERRO] Não foi possível abrir o arquivo para leitura. Verifique se o Cartão está montado ou se o arquivo existe.\n");
-
+        led_piscar_roxo();
         return;
     }
     char buffer[128];
@@ -369,11 +436,14 @@ void read_file(const char *filename)
     printf("Conteúdo do arquivo %s:\n", filename);
     while (f_read(&file, buffer, sizeof(buffer) - 1, &br) == FR_OK && br > 0)
     {
+        led_piscar_azul();
         buffer[br] = '\0';
         printf("%s", buffer);
     }
     f_close(&file);
     printf("\nLeitura do arquivo %s concluída.\n\n", filename);
+    oled_msg("Leitura feita", NULL);
+    led_verde();
 }
 
 // Trecho para modo BOOTSEL com botão B
@@ -490,8 +560,8 @@ static void mpu6050_reset(){
     sleep_ms(10); // Aguarda estabilização após acordar
 }
 
-ssd1306_t ssd;  //Estrutura para armazenar os dados do display
 void inicializar_componentes(){
+    led_amarelo();
     stdio_init_all();
     sleep_ms(5000);
     time_init();
@@ -542,24 +612,18 @@ void inicializar_componentes(){
     mpu6050_reset();
 }
 
-
 int main(){
     inicializar_componentes();
-    // Para ser utilizado o modo BOOTSEL com botão B
-    gpio_init(botaoB);
-    gpio_set_dir(botaoB, GPIO_IN);
-    gpio_pull_up(botaoB);
-    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
     printf("FatFS SPI example\n");
     printf("\033[2J\033[H"); // Limpa tela
     printf("\n> ");
     stdio_flush();
-    //    printf("A tela foi limpa...\n");
-    //    printf("Depois do Flush\n");
+
+    led_branco();
+    oled_msg("SD Desmontado", NULL);
     run_help();
-    while (true)
-    {
+    while (true){
         int cRxedChar = getchar_timeout_us(0);
         if (PICO_ERROR_TIMEOUT != cRxedChar)
             process_stdio(cRxedChar);
@@ -569,6 +633,8 @@ int main(){
             printf("\nMontando o SD...\n");
             run_mount();
             printf("\nEscolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'b') // Desmonta o SD card se pressionar 'b'
         {
@@ -582,11 +648,15 @@ int main(){
             run_ls();
             printf("\nListagem concluída.\n");
             printf("\nEscolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'd') // Exibe o conteúdo do arquivo se pressionar 'd'
         {
             read_file(filename);
             printf("Escolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'e') // Obtém o espaço livre no SD card se pressionar 'e'
         {
@@ -594,11 +664,15 @@ int main(){
             run_getfree();
             printf("\nEspaço livre obtido.\n");
             printf("\nEscolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'f') // Captura dados do ADC e salva no arquivo se pressionar 'f'
         {
             capture_mpu_data_and_save();
             printf("\nEscolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'g') // Formata o SD card se pressionar 'g'
         {
@@ -606,6 +680,8 @@ int main(){
             run_format();
             printf("\nFormatação concluída.\n\n");
             printf("\nEscolha o comando (h = help):  ");
+            sleep_ms(1000);
+            oled_msg("SD status:", "Pronto!");
         }
         if (cRxedChar == 'h') // Exibe os comandos disponíveis se pressionar 'h'
         {
