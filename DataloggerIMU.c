@@ -41,10 +41,6 @@
 #define ENDERECO_DISP 0x3C            // Endereço I2C do display
 
 uint buzzer_slice;  //Variável para armazenar o slice do buzzer
-static bool logger_enabled;
-static const uint32_t period = 1000;
-static absolute_time_t next_log_time;
-volatile bool capturando = false;
 static int addr = 0x68;
 volatile bool botao_captura_acionado = false;
 volatile bool botao_sd_acionado = false;
@@ -57,13 +53,9 @@ bool captura_inicializada = false;
 int captura_indice = 0;
 
 FIL file;
-
-
 ssd1306_t ssd;  //Estrutura para armazenar os dados do display
-
 static char filename[20] = "mpu6050.csv";
 
-////////////////Periféricos/////////////////////
 void set_rgb_color(bool r, bool g, bool b) {
     gpio_put(LED_RGB_R, r);
     gpio_put(LED_RGB_G, g);
@@ -103,7 +95,6 @@ void oled_msg(const char* linha1, const char* linha2){
         ssd1306_draw_string(&ssd, linha2, 20, 25);
     ssd1306_send_data(&ssd);
 }
-//////////////////////////////////////////////////////////////////////////////
 
 // Função para ler dados crus do acelerômetro, giroscópio e temperatura
 static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp){
@@ -136,7 +127,6 @@ static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp){
 
     *temp = (buffer[0] << 8) | buffer[1];
 }
-///////////////////////////////////////////////////////////////////
 
 static sd_card_t *sd_get_by_name(const char *const name)
 {
@@ -420,16 +410,7 @@ void read_file(const char *filename){
     led_verde();
 }
 
-// Trecho para modo BOOTSEL com botão B
-#include "pico/bootrom.h"
-#define botaoB 6
-void gpio_irq_handler(uint gpio, uint32_t events)
-{
-    reset_usb_boot(0, 0);
-}
-
-static void run_help()
-{
+static void run_help(){
     printf("\nComandos disponíveis:\n\n");
     printf("Digite 'a' para montar o cartão SD\n");
     printf("Digite 'b' para desmontar o cartão SD\n");
@@ -534,7 +515,7 @@ static void mpu6050_reset(){
     sleep_ms(10); // Aguarda estabilização após acordar
 }
 
-void botao_irq_handler(uint gpio, uint32_t events){
+void gpio_irq_handler(uint gpio, uint32_t events){
     absolute_time_t agora = get_absolute_time();
 
     if (gpio == BOTAO_CAPTURA){
@@ -565,16 +546,25 @@ void alternar_sd(){
     }
 }
 
+void beep(int n){
+    for (int i = 0; i < n; i++) {
+        pwm_set_enabled(buzzer_slice, true);
+        sleep_ms(100);
+        pwm_set_enabled(buzzer_slice, false);
+        sleep_ms(100);  // pausa entre beeps
+    }
+}
+
 void alternar_captura(){
-    if (!captura_em_andamento) {
-        if (!sd_montado) {
+    if (!captura_em_andamento){
+        if(!sd_montado){
             printf("[ERRO] Cartao SD nao montado.\n");
             oled_msg("Erro:", "Monte o SD!");
             return;
         }
 
         FRESULT res = f_open(&file, filename, FA_WRITE | FA_CREATE_ALWAYS);
-        if (res != FR_OK) {
+        if(res != FR_OK){
             printf("[ERRO] Falha ao abrir arquivo.\n");
             oled_msg("Erro:", "Arquivo!");
             led_piscar_roxo();
@@ -589,11 +579,12 @@ void alternar_captura(){
         captura_inicializada = true;
         captura_indice = 0;
         cancelar_captura = false;
-
+        beep(1); 
         printf("[CAPTURA] Iniciada\n");
         oled_msg("Gravando...", NULL);
         led_vermelho();
-    } else {
+    }else{
+        beep(2);
         cancelar_captura = true;
         printf("[CAPTURA] Cancelando...\n");
     }
@@ -612,8 +603,8 @@ void inicializar_componentes(){
     gpio_set_dir(BOTAO_SD, GPIO_IN);
     gpio_pull_up(BOTAO_CAPTURA);
     gpio_pull_up(BOTAO_SD);
-    gpio_set_irq_enabled_with_callback(BOTAO_CAPTURA, GPIO_IRQ_EDGE_FALL, true, &botao_irq_handler);
-    gpio_set_irq_enabled_with_callback(BOTAO_SD, GPIO_IRQ_EDGE_FALL, true, &botao_irq_handler);
+    gpio_set_irq_enabled_with_callback(BOTAO_CAPTURA, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_set_irq_enabled_with_callback(BOTAO_SD, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
     // Inicializa o LED
     gpio_init(LED_RGB_R);
