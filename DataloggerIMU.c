@@ -22,6 +22,7 @@
 #include "my_debug.h"
 #include "rtc.h"
 #include "sd_card.h"
+#define TOTAL_AMOSTRAS 128
 
 #define BOTAO_CAPTURA 5
 #define BOTAO_SD       6
@@ -45,6 +46,18 @@ static const uint32_t period = 1000;
 static absolute_time_t next_log_time;
 volatile bool capturando = false;
 static int addr = 0x68;
+volatile bool botao_captura_acionado = false;
+volatile bool botao_sd_acionado = false;
+absolute_time_t ultimo_acionamento_captura;
+absolute_time_t ultimo_acionamento_sd;
+bool sd_montado = false;
+volatile bool captura_em_andamento = false;
+volatile bool cancelar_captura = false;
+bool captura_inicializada = false;
+int captura_indice = 0;
+
+FIL file;
+
 
 ssd1306_t ssd;  //Estrutura para armazenar os dados do display
 
@@ -382,45 +395,6 @@ static void run_cat(){
     led_verde();
 }
 
-void capture_mpu_data_and_save(){
-    printf("\nCapturando dados do mpu. Aguarde finalização...\n");
-    FIL file;
-    FRESULT res = f_open(&file, filename, FA_WRITE | FA_CREATE_ALWAYS);
-
-    if(res != FR_OK){
-        printf("\n[ERRO] Não foi possível abrir o arquivo para escrita. Monte o Cartao.\n");
-        led_piscar_roxo();
-        return;
-    }
-
-    UINT bw;
-    const char *header = "amostra,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z\n";
-    f_write(&file, header, strlen(header), &bw);
-    led_vermelho();
-    oled_msg("Gravando...", NULL);
-    int16_t acc[3], gyro[3], temp;
-    for(int i = 0; i < 128; i++){
-        mpu6050_read_raw(acc, gyro, &temp);
-
-        float ax = acc[0]/16384.0f, ay = acc[1]/16384.0f, az = acc[2]/16384.0f;
-        float gx = gyro[0]/131.0f, gy = gyro[1]/131.0f, gz = gyro[2]/131.0f;
-
-        char buffer[100];
-        sprintf(buffer, "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n", i+1, ax, ay, az, gx, gy, gz);
-        res = f_write(&file, buffer, strlen(buffer), &bw);
-        if (res != FR_OK) {
-            printf("[ERRO] Não foi possível escrever no arquivo.\n");
-            led_piscar_roxo();
-            break;
-        }
-        sleep_ms(100);
-    }
-    f_close(&file);
-    printf("\n[DADOS SALVOS NO CARTÃO: %s]\n", filename);
-    oled_msg("Concluida!", NULL);
-    led_verde();
-}
-
 // Função para ler o conteúdo de um arquivo e exibir no terminal
 void read_file(const char *filename){
     FIL file;
@@ -462,7 +436,7 @@ static void run_help()
     printf("Digite 'c' para listar arquivos\n");
     printf("Digite 'd' para mostrar conteúdo do arquivo\n");
     printf("Digite 'e' para obter espaço livre no cartão SD\n");
-    printf("Digite 'f' para capturar dados do ADC e salvar no arquivo\n");
+    printf("Digite 'f' para iniciar/encerrar a captura de dados do IMU e salvar no arquivo\n");
     printf("Digite 'g' para formatar o cartão SD\n");
     printf("Digite 'h' para exibir os comandos disponíveis\n");
     printf("\nEscolha o comando:  ");
@@ -560,6 +534,71 @@ static void mpu6050_reset(){
     sleep_ms(10); // Aguarda estabilização após acordar
 }
 
+void botao_irq_handler(uint gpio, uint32_t events){
+    absolute_time_t agora = get_absolute_time();
+
+    if (gpio == BOTAO_CAPTURA){
+        if (absolute_time_diff_us(ultimo_acionamento_captura, agora) > 300000){ // debounce 300ms
+            botao_captura_acionado = true;
+            ultimo_acionamento_captura = agora;
+        }
+    }
+    if (gpio == BOTAO_SD){
+        if (absolute_time_diff_us(ultimo_acionamento_sd, agora) > 300000){
+            botao_sd_acionado = true;
+            ultimo_acionamento_sd = agora;
+        }
+    }
+}
+
+void alternar_sd(){
+    if(!sd_montado){
+        printf("[BOTÃO] Montando o cartão SD...\n");
+        run_mount();
+        oled_msg("SD status:", "Montado!");
+        sd_montado = true;
+    }else{
+        printf("[BOTÃO] Desmontando o cartão SD...\n");
+        run_unmount();
+        oled_msg("SD status:", "Desmontado!");
+        sd_montado = false;
+    }
+}
+
+void alternar_captura(){
+    if (!captura_em_andamento) {
+        if (!sd_montado) {
+            printf("[ERRO] Cartao SD nao montado.\n");
+            oled_msg("Erro:", "Monte o SD!");
+            return;
+        }
+
+        FRESULT res = f_open(&file, filename, FA_WRITE | FA_CREATE_ALWAYS);
+        if (res != FR_OK) {
+            printf("[ERRO] Falha ao abrir arquivo.\n");
+            oled_msg("Erro:", "Arquivo!");
+            led_piscar_roxo();
+            return;
+        }
+
+        UINT bw;
+        const char *header = "amostra,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z\n";
+        f_write(&file, header, strlen(header), &bw);
+
+        captura_em_andamento = true;
+        captura_inicializada = true;
+        captura_indice = 0;
+        cancelar_captura = false;
+
+        printf("[CAPTURA] Iniciada\n");
+        oled_msg("Gravando...", NULL);
+        led_vermelho();
+    } else {
+        cancelar_captura = true;
+        printf("[CAPTURA] Cancelando...\n");
+    }
+}
+
 void inicializar_componentes(){
     led_amarelo();
     stdio_init_all();
@@ -573,6 +612,8 @@ void inicializar_componentes(){
     gpio_set_dir(BOTAO_SD, GPIO_IN);
     gpio_pull_up(BOTAO_CAPTURA);
     gpio_pull_up(BOTAO_SD);
+    gpio_set_irq_enabled_with_callback(BOTAO_CAPTURA, GPIO_IRQ_EDGE_FALL, true, &botao_irq_handler);
+    gpio_set_irq_enabled_with_callback(BOTAO_SD, GPIO_IRQ_EDGE_FALL, true, &botao_irq_handler);
 
     // Inicializa o LED
     gpio_init(LED_RGB_R);
@@ -621,9 +662,61 @@ int main(){
     stdio_flush();
 
     led_branco();
-    oled_msg("SD Desmontado", NULL);
+    oled_msg("SD status:", "Nao montado");
     run_help();
-    while (true){
+    while(true){
+        if(botao_captura_acionado){
+            alternar_captura();
+            botao_captura_acionado = false;
+        }
+
+        if(captura_em_andamento && captura_inicializada){
+            if(cancelar_captura || captura_indice >= TOTAL_AMOSTRAS){
+                f_close(&file);
+                captura_em_andamento = false;
+                captura_inicializada = false;
+
+                if(cancelar_captura){
+                    printf("[CAPTURA] Encerrada pelo usuario.\n");
+                    oled_msg("Status:", "Finalizada");
+                }else{
+                    printf("[CAPTURA] Concluida.\n");
+                    oled_msg("Status:", "Concluida!");
+                }
+                led_verde();
+            }else{
+                int16_t acc[3], gyro[3], temp;
+                mpu6050_read_raw(acc, gyro, &temp);
+                float ax = acc[0] / 16384.0f;
+                float ay = acc[1] / 16384.0f;
+                float az = acc[2] / 16384.0f;
+                float gx = gyro[0] / 131.0f;
+                float gy = gyro[1] / 131.0f;
+                float gz = gyro[2] / 131.0f;
+
+                char buffer[100];
+                UINT bw;
+                snprintf(buffer, sizeof(buffer), "%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                         captura_indice + 1, ax, ay, az, gx, gy, gz);
+
+                FRESULT res = f_write(&file, buffer, strlen(buffer), &bw);
+                if (res != FR_OK) {
+                    printf("[ERRO] Falha na escrita.\n");
+                    led_piscar_roxo();
+                    cancelar_captura = true;
+                }
+                captura_indice++;
+                sleep_ms(100);
+            }
+        }
+
+        if (botao_sd_acionado){
+            botao_sd_acionado = false;
+            alternar_sd();
+            sleep_ms(1000);
+            oled_msg("SD status:", sd_montado ? "Pronto!" : "Nao montado");
+        }
+
         int cRxedChar = getchar_timeout_us(0);
         if (PICO_ERROR_TIMEOUT != cRxedChar)
             process_stdio(cRxedChar);
@@ -667,12 +760,9 @@ int main(){
             sleep_ms(1000);
             oled_msg("SD status:", "Pronto!");
         }
-        if (cRxedChar == 'f') // Captura dados do ADC e salva no arquivo se pressionar 'f'
+        if (cRxedChar == 'f') // Captura dados do IMU e salva no arquivo se pressionar 'f'
         {
-            capture_mpu_data_and_save();
-            printf("\nEscolha o comando (h = help):  ");
-            sleep_ms(1000);
-            oled_msg("SD status:", "Pronto!");
+            alternar_captura();
         }
         if (cRxedChar == 'g') // Formata o SD card se pressionar 'g'
         {
