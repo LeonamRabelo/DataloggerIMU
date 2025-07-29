@@ -1,4 +1,4 @@
-# Projeto: Datalogger de Movimento com MPU6050 e Raspberry Pi Pico
+# Projeto: Datalogger de Movimento com MPU6050 e Raspberry Pi Pico W
 
 Este projeto implementa um datalogger portátil capaz de capturar dados de movimento (aceleração e giroscópio) utilizando o sensor MPU6050. Os dados são armazenados em formato `.csv` em um cartão microSD. O sistema inclui display OLED, LED RGB, buzzer e botões físicos para interação local.
 
