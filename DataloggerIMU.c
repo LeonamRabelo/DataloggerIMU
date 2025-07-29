@@ -102,7 +102,7 @@ void oled_msg(const char* linha1, const char* linha2){
     ssd1306_send_data(&ssd);
 }
 
-//Função para ler dados crus do acelerômetro, giroscópio e temperatura
+//Função para ler dados crus do acelerômetro, giroscópio
 static void mpu6050_read_raw(int16_t accel[3], int16_t gyro[3], int16_t *temp){
     uint8_t buffer[6];
 
